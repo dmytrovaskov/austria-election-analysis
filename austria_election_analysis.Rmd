@@ -1,0 +1,315 @@
+---
+title: "Austria Election Data Analysis"
+author: "Dmytro Vaskov"
+date: "2025-17-02"
+output: html_document
+---
+# 1. Data Import
+```{r load-data}
+# # This script assumes the working directory is the project root
+natwahl24 <- read.table("natwahl24.csv", sep = ";", header = TRUE)
+natwahl19 <- read.table("data/natwahl19.csv", sep = ";", header = TRUE)
+bpwahl22_corrected <- read.table("data/bpwahl22_corrected.csv", sep = ";", header = TRUE)
+bpwahl22_error <- read.table("data/bpwahl22_error.csv", sep = ";", header = TRUE)
+bpwahl22_fixed <- read.table("data/bpwahl22_fixed.csv", sep = ";", header = TRUE)
+load("data/Wahlen.RData")
+```
+# 2. Plausibility Checks
+```{r plausibility checks}
+checke.wahlergebnis <- function(wahl) {
+  
+  # Check whether total votes equal valid + invalid votes
+  check_stimmen <- wahl["Abgegebene"] == (wahl["Ungueltige"] + wahl["Gueltige"])
+  print(paste("Abgegebene Stimmen = Ungueltige + Gueltige:",
+    all(check_stimmen == TRUE),
+    sep = " "
+  ))
+  
+  # Check whether Austria-wide totals equal the sum of the federal states
+  ergeb_bundesland <- wahl[grep("^G[1-9]0000$", wahl$GKZ), ]
+  bool_ohne_anteile <- grepl("%", names(ergeb_bundesland)) == FALSE
+  stimmen_bundesland <- ergeb_bundesland[, bool_ohne_anteile]
+  bool_bundesland <- sapply(stimmen_bundesland, is.numeric)
+  numerisch_bundesland <- colSums(stimmen_bundesland[bool_bundesland], na.rm = TRUE)
+  
+  ergeb_oe <- wahl[grep("G00000$", wahl$GKZ), ]
+  stimmen_oe <- ergeb_oe[, bool_ohne_anteile]
+  bool_oe <- sapply(stimmen_oe, is.numeric)
+  
+  print(paste(
+    "Gesamtanzahl in Oesterreich = Summe der Bundeslaender:",
+    all(stimmen_oe[bool_oe] == numerisch_bundesland),
+    sep = " "
+  ))
+  
+  # Check whether each federal state total equals the sum of its districts
+  check_results <- list()
+  
+  for (i in 1:9) {
+    bl_gkz <- paste0("G", i, "0000")
+    bundesland_data <- wahl[wahl$GKZ == bl_gkz, ]
+    bundesland_data <- bundesland_data[, bool_ohne_anteile]
+    
+    bezirk_pattern <- paste0("^G", i, "[0-9][1-9]00$")
+    bezirke_data <- wahl[grep(bezirk_pattern, wahl$GKZ), ]
+    bezirke_data <- bezirke_data[, bool_ohne_anteile]
+    
+    spalten <- names(wahl[, bool_bundesland])
+    
+    vergleich <- sapply(spalten, function(spalte) {
+      sum_bezirke <- sum(bezirke_data[[spalte]], na.rm = TRUE)
+      sum_bundesland <- bundesland_data[[spalte]]
+      return(sum_bezirke == sum_bundesland)
+    })
+    
+    check_results[[bl_gkz]] <- vergleich
+  }
+  
+  print("Gesamtanzahl in jedem Bundesland = Summe der Bezirke:")
+  print(check_results)
+  
+  # Check whether party vote shares sum to 100% (allowing for rounding differences)
+  parteien <- setdiff(
+    names(wahl),
+    c("GKZ", "Gebietsname", "Wahlberechtigte", "Abgegebene", "Ungueltige", "Gueltige")
+  )
+  parteien <- parteien[!grepl("%", parteien)]
+  parteien_spalten <- wahl[parteien]
+  
+  check_anteile <- all(
+    abs(rowSums(parteien_spalten / wahl[, "Gueltige"] * 100, na.rm = TRUE) - 100) < 0.1
+    )
+  
+  print(paste(
+    "Parteianteile sind bis auf Rundungsfehler korrekt:",
+    check_anteile,
+    sep = " "
+  ))
+}
+```
+# 3. Statistical analysis of party performance
+```{r statistics}
+# Identify Best and Worst Regional Results by Party
+
+bestes_schlechtes <- function(
+  wahl,
+  partei = c("ÖVP", "SPÖ", "FPÖ", "GRÜNE", "NEOS", "BIER", "MFG", "BGE", "LMP", "GAZA", "KPÖ", "KEINE"),
+  gebiet = c("Bundesland", "Bezirk", "Gemeinde")
+) {
+  
+  df <- wahl[
+    !grepl("Wahlkarten", wahl$Gebietsname),
+    grepl("%", names(wahl)) | grepl("GKZ", names(wahl)) | grepl("Gebietsname", names(wahl))
+  ]
+  
+  if (gebiet == "Bundesland") {
+    df_filtered <- df[grepl("^G[1-9]0000$", df$GKZ), ]
+  } else if (gebiet == "Bezirk") {
+    df_filtered <- df[
+      grepl("^G[1-9][0-9]{3}0$", df$GKZ) & !grepl("^G[1-9]0000$", df$GKZ),
+    ]
+  } else if (gebiet == "Gemeinde") {
+    df_filtered <- df[grepl("^G[1-9][0-9]{3}[1-9]$", df$GKZ), ]
+  } else {
+    stop("Ungültiger Gebietstyp!")
+  }
+  
+  partei_spalte <- paste0(partei, " %")
+  
+  if (!(partei_spalte %in% names(df_filtered))) {
+    stop(paste("Partei", partei, "existiert nicht in den Daten!"))
+  }
+  
+  ergebnisse <- df_filtered[, partei_spalte]
+  
+  if (all(is.na(ergebnisse))) {
+    stop("Keine gültigen numerischen Werte für die Partei gefunden!")
+  }
+  
+  bestes_gebiet <- df_filtered[
+    which.max(ergebnisse),
+    c("GKZ", "Gebietsname", partei_spalte)
+  ]
+  
+  schlechtestes_gebiet <- df_filtered[
+    which.min(ergebnisse),
+    c("GKZ", "Gebietsname", partei_spalte)
+  ]
+  
+  print("Bestes Wahlergebnis:")
+  print(bestes_gebiet)
+  
+  print("Schlechtestes Wahlergebnis:")
+  print(schlechtestes_gebiet)
+}
+
+
+```
+# 4. Seats allocation calculation
+```{r seats allocation}
+zieldatei_fun <- function(wahl) {parteien <- setdiff(names(wahl),
+                      c("GKZ", "Gebietsname", "Wahlberechtigte", "Abgegebene", "Ungueltige", "Gueltige"))
+
+parteien <- parteien[!grepl("%", parteien)]
+stimmen <- wahl[grepl("G00000", wahl$GKZ), ][parteien]
+
+print(parteien)
+print(stimmen)
+}
+ziel_datei <- zieldatei_fun(wahlen$natwahl19)
+stimmen <- ziel_datei  # Parameter "stimmen" for berechne.mandate()
+parteien <- names(ziel_datei) # Parameter "parteien for berechne.mandate()
+
+berechne.mandate <- function(parteien, stimmen, sitze = 183, min.p = 4) {
+  
+  # Parameter check
+  
+  if (length(parteien) != length(stimmen)) {
+    stop("Die Länge der Parteien- und Stimmenvektoren muss gleich sein.")
+  }
+  if (any(stimmen < 0)) {
+    stop("Stimmenanzahlen müssen positiv sein.")
+  }
+  if (sitze <= 0) {
+    stop("Die Anzahl der Sitze muss größer als 0 sein.")
+  }
+  if (min.p < 0 || min.p > 100) {
+    stop("min.p muss zwischen 0 und 100 liegen (Prozentwert).")
+  }
+  
+  # calculate the overall number of votes
+  gesamtstimmen <- sum(stimmen)
+  
+  # filter out the parties that are above the minimum hurdle
+  parteien_valid <- parteien[(stimmen / gesamtstimmen) * 100 >= min.p]
+  stimmen_valid <- stimmen[(stimmen / gesamtstimmen) * 100 >= min.p]
+  
+  # if no party is above the minimum hurdle
+  if (length(parteien_valid) == 0) {
+    warning("Keine Partei hat die Mindesthürde überschritten.")
+    return(setNames(rep(0, length(parteien)), parteien))
+  }
+  
+  # D'Hondt-Verfahren
+  quotient_matrix <- sapply(1:sitze, function(k) stimmen_valid / k)
+  
+  mandate_index <- order(quotient_matrix, decreasing = TRUE)[1:sitze]
+  
+  mandate <- table(parteien_valid[(mandate_index - 1) %% 
+                                    length(parteien_valid) + 1])
+  mandate_final <- setNames(rep(0, length(parteien)), parteien)
+  mandate_final[names(mandate)] <- mandate
+  
+  return(mandate_final)
+}
+```
+# 5. Seats allocation Visualisation
+```{r seat allocation visuals}
+zieldatei_fun <- function(wahl) {parteien <- setdiff(names(wahl),
+                      c("GKZ", "Gebietsname", "Wahlberechtigte", "Abgegebene", "Ungueltige", "Gueltige"))
+
+parteien <- parteien[!grepl("%", parteien)]
+stimmen <- wahl[grepl("G00000", wahl$GKZ), ][parteien]
+
+print(parteien)
+print(stimmen)
+}
+
+ziel_datei <- zieldatei_fun(wahlen$natwahl24)
+stimmen <- ziel_datei  # Parameter "stimmen" for visualisiere.mandate_basis()
+parteien <- names(ziel_datei) # Parameter "parteien" for 
+#visualisiere.mandate_basis()
+mandate <- berechne.mandate(parteien, stimmen)
+
+visualisiere_mandate_basis <- function(mandate, parteien, farben = NULL, sitze = 183) {
+  
+  # Parametercheck
+  if (length(mandate) != length(parteien)) {
+    stop("Die Länge der Mandats- und Parteienvektoren muss gleich sein.")
+  }
+  
+  if (sum(mandate) != sitze) {
+    stop("Die Anzahl der Mandate muss der Gesamtzahl der Sitze entsprechen.")
+  }
+  
+  if (is.null(farben)) {
+    farben <- c("ÖVP" = "blue1", "SPÖ" = "red", "FPÖ" = "skyblue", 
+                "GRÜNE" = "green", "NEOS" = "pink", "BIER" = "grey", 
+                "MFG" = "darkorange3", "BGE" = "chartreuse", "LMP" = "cadetblue", "GAZA" = "brown", "KPÖ" = "coral", "KEINE" = "magenta")
+  }
+  
+  par(mar = c(3, 3, 3, 3))  # Margins
+  plot(0, type = "n", xlim = c(-1.5, 1.5), ylim = c(0, 1), xlab = "", ylab = "", axes = FALSE)
+  
+  # draw a semicircle
+  theta <- seq(0, pi, length.out = sitze + 1)
+  start_angle <- pi
+  
+  # draw seats on the semicircle
+  angle_pos <- 0  # Start position
+  for (i in 1:length(mandate)) {
+    # calculate the angle
+    for (j in 1:mandate[i]) {
+      angle_pos <- angle_pos + (pi / sitze)
+      x <- cos(angle_pos)   
+      y <- sin(angle_pos)  
+      points(x, y, pch = 16, col = farben[parteien[i]], cex = 1.5)
+    }
+  }
+  
+  legend("bottom", legend = parteien, fill = farben, cex = 0.8, ncol = 2)
+  
+  title(paste("Mandatsverteilung der Nationalratswahl"))
+}
+
+visualisiere_mandate_basis(mandate, parteien)
+
+```
+# 6. Simulation of a survey
+```{r survey}
+df <- wahlen$natwahl19 # one can upload the object of interest
+
+n <- 10^5  
+size <- 200
+
+simuliere.umfrage <- function(n, size, parteien, gewichte) {
+  df_oesterreich <- df[df$GKZ == "G00000", ]
+  parteien <- setdiff(names(df_oesterreich), 
+                      c("GKZ", "Gebietsname", "Wahlberechtigte", "Abgegebene", "Ungueltige", "Gueltige"))
+
+  gewichte <- as.numeric(df_oesterreich[1, parteien])
+  
+  gewichte <- gewichte / sum(gewichte) # to calculate probabilities
+  
+  # Parameterchecks
+  
+  if (length(parteien) != length(gewichte)) {
+    stop("Die Anzahl der Parteien muss der Anzahl der Gewichte entsprechen!")
+  }
+  if (sum(gewichte) <= 0) {
+    stop("Die Wahrscheinlichkeitsgewichte müssen positiv sein!")
+  }
+  if (n <= 0 || size <= 0) {
+    stop("Die Anzahl der Umfragen (n) und die Stichprobengröße (size) 
+         müssen positiv sein!")
+  }
+  
+  # Simulilate a survey
+  umfrage_matrix <- matrix(0, nrow = n, ncol = length(parteien))
+  colnames(umfrage_matrix) <- parteien
+  
+  for (i in 1:n) {
+    ergebnisse <- table(sample(parteien, size, replace = TRUE, prob = gewichte))
+    umfrage_matrix[i, names(ergebnisse)] <- ergebnisse / size   
+  }
+  
+  # decreasing order
+  mediane <- apply(umfrage_matrix, 2, median, na.rm = TRUE)
+  umfrage_matrix <- umfrage_matrix[, order(mediane, decreasing = TRUE)]
+  umfrage_matrix <- umfrage_matrix[,!grepl("%", colnames(umfrage_matrix))]
+  return(umfrage_matrix)
+}
+
+ergebnisse <- simuliere.umfrage(n, size, parteien, gewichte)
+print(ergebnisse)
+```
