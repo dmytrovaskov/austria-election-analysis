@@ -7,7 +7,7 @@ output: html_document
 # 1. Data Import
 ```{r load-data}
 # # This script assumes the working directory is the project root
-natwahl24 <- read.table("natwahl24.csv", sep = ";", header = TRUE)
+natwahl24 <- read.table("data/natwahl24.csv", sep = ";", header = TRUE)
 natwahl19 <- read.table("data/natwahl19.csv", sep = ";", header = TRUE)
 bpwahl22_corrected <- read.table("data/bpwahl22_corrected.csv", sep = ";", header = TRUE)
 bpwahl22_error <- read.table("data/bpwahl22_error.csv", sep = ";", header = TRUE)
@@ -312,4 +312,5 @@ simuliere.umfrage <- function(n, size, parteien, gewichte) {
 
 ergebnisse <- simuliere.umfrage(n, size, parteien, gewichte)
 print(ergebnisse)
+
 ```
